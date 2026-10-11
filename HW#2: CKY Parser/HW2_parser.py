@@ -3,7 +3,8 @@
 
 import sys
 from collections import defaultdict
-from nltk import CFG
+from nltk import CFG, Tree
+import re
 
 def read_grammar(fname): 
     f = open(fname)
@@ -39,7 +40,7 @@ class CKY:
         for length in range(2, n + 1):
             for i in range(n - length + 1):
                 j = i + length
-                for kk in range(i + 1, j):
+                for kk in range(j - 1, i, -1):
                     lcell = bp.get((i, kk))
                     rcell = bp.get((kk, j))
                     if not lcell or not rcell:
@@ -50,15 +51,15 @@ class CKY:
                                 bp[(i, j)][A].append((kk, B, C))
                                 cnt[(i, j)][A] += cnt[(i, kk)][B] * cnt[(kk, j)][C]
         #walk the backpointers to get the actual trees
-        def get_trees(i, j, A):
+        def get_trees(i, j, A): 
             for thing in bp[(i, j)][A]:
                 if thing is None:
-                    yield "(" + str(A) + " " + toks[i] + ")"
+                    yield Tree(str(A), [toks[i]])
                 else:
                     kk, B, C = thing
                     for lt in get_trees(i, kk, B):
                         for rt in get_trees(kk, j, C):
-                            yield "(" + str(A) + " " + lt + " " + rt + ")"
+                            yield Tree(str(A), [lt, rt])
         ans = 0
         if n > 0:
             ans = cnt[(0, n)][self.start]
@@ -70,15 +71,19 @@ def main(gfile, sfile, ofile):
     parser = CKY(read_grammar(gfile))
     fin = open(sfile)
     fout = open(ofile, "w")
+    first = True
     for line in fin:
         s = line.strip()
         if s == "":
             continue
-        num, trees = parser.parse(s.split())
+        num, trees = parser.parse(re.findall(r"\w+|[^\w\s]", s))
+        if not first:
+            fout.write("\n")
+        first = False
         fout.write(s + "\n")
         for t in trees:
-            fout.write(t + "\n")
-        fout.write("Number of parses: " + str(num) + "\n\n")
+            fout.write(str(t) + "\n")
+        fout.write("Number of parses: " + str(num) + "\n")
     fin.close()
     fout.close()
 
