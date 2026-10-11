@@ -1,3 +1,3 @@
-#!/bin/sh
-# usage: hw2_parser.sh <grammar_filename> <test_sentence_filename> <output_filename>
-python3 hw2.py "$1" "$2" "$3"
+#!/bin/bash
+DIR="$(cd "$(dirname "$0")" && pwd)"
+/mnt/dropbox/26-27/571F/envs/bin/python "$DIR/hw2_parser.py" "$1" "$2" "$3"
