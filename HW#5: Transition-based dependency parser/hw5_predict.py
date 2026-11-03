@@ -3,7 +3,7 @@
 Pipeline
   1. Oracle: es_train.conllu -> gold transition sequences (hw5_train.seq)
   2. Features: configuration -> feature dict (see extract_features)
-  3. Train: NLTK MaxEnt classifier on (features, gold transition) pairs
+  3. Train: MaxEnt (multinomial logistic regression, sklearn) on (features, gold transition) pairs
   4. Test:  walk through each test sentence using the GOLD transitions, 
             predict a transition at every configuration, write hw5_pred.seq
             and report micro-F1 against es_test.seq.gold
@@ -12,7 +12,8 @@ Pipeline
 import sys
 import random
 from collections import Counter, namedtuple
-from nltk.classify import MaxentClassifier
+from sklearn.feature_extraction import DictVectorizer
+from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import f1_score
 
 #Configuration constants
@@ -27,8 +28,7 @@ ROOT_ID= 0
 ROOT_TOKEN_FIELDS= dict(form="ROOT", lemma="ROOT", upos="ROOT", feats="_")
 MISSING= "NONE"
 
-MAX_ITERATIONS= 15 #MaxEnt training iterations
-MAXENT_ALGORITHM= "IIS" #NLTK: 'GIS', 'IIS' 
+MAX_ITERATIONS= 200 #optimizer iterations for logistic regression
 RANDOM_SEED= 571
 
 Token = namedtuple("Token", "token_id form lemma upos feats head deprel")
@@ -66,15 +66,48 @@ def read_conllu_sentences(path):
         all_sentences.append(current_tokens)
     return all_sentences
 
-def read_transition_sequences(path):
-    #One sentence per line, whitespace separated transitions.
+# Transition sequence reading/writing (layout-agnostic)
+def detect_sequence_layout(path):
+    #'sentence_per_line', 'blank_line_between_sentences', or 'transition_per_line'.
     with open(path, encoding="utf-8") as seq_file:
-        return [line.split() for line in seq_file.read().splitlines()]
+        lines = seq_file.read().splitlines()
+    non_empty_lines = [line for line in lines if line.strip()]
+    if any(len(line.split()) > 1 for line in non_empty_lines):
+        return "sentence_per_line"
+    if len(non_empty_lines) < len(lines):
+        return "blank_line_between_sentences"
+    return "transition_per_line"
 
-def write_transition_sequences(path, sequences):
+def read_transition_sequences(path, sentences):
+    #Consume transitions for each sentence until its parse reaches the final state.
+    with open(path, encoding="utf-8") as seq_file:
+        all_transitions = seq_file.read().split()
+    sequences = []
+    position = 0
+    for sentence_tokens in sentences:
+        state = ParserState(sentence_tokens)
+        sentence_transitions = []
+        while not state.is_final():
+            transition = all_transitions[position]
+            position += 1
+            sentence_transitions.append(transition)
+            state.apply(transition)
+        sequences.append(sentence_transitions)
+    if position != len(all_transitions):
+        print("WARNING: %d unused transitions in %s" % (
+            len(all_transitions) - position, path), file=sys.stderr)
+    return sequences
+
+def write_transition_sequences(path, sequences, layout):
     with open(path, "w", encoding="utf-8") as seq_file:
         for transition_sequence in sequences:
-            seq_file.write(" ".join(transition_sequence) + "\n")
+            if layout == "sentence_per_line":
+                seq_file.write(" ".join(transition_sequence) + "\n")
+            else:
+                for transition in transition_sequence:
+                    seq_file.write(transition + "\n")
+                if layout == "blank_line_between_sentences":
+                    seq_file.write("\n")
 
 # Transition helpers
 def make_transition(operator, label=None):
@@ -233,10 +266,22 @@ def sentence_to_training_instances(sentence_tokens, gold_transitions):
     return instances
  
 # Train / test 
+class SklearnMaxentClassifier:
+    #Multinomial logistic regression (= MaxEnt) with an NLTK-like classify().
+    def __init__(self, training_instances):
+        feature_dicts = [features for features, _ in training_instances]
+        transition_labels = [label for _, label in training_instances]
+        self.vectorizer = DictVectorizer()
+        feature_matrix = self.vectorizer.fit_transform(feature_dicts)
+        self.model = LogisticRegression(max_iter=MAX_ITERATIONS, random_state=RANDOM_SEED)
+        self.model.fit(feature_matrix, transition_labels)
+
+    def classify(self, features):
+        return self.model.predict(self.vectorizer.transform([features]))[0]
+
 def train_classifier(training_instances):
     random.seed(RANDOM_SEED)
-    return MaxentClassifier.train(
-        training_instances, algorithm=MAXENT_ALGORITHM, max_iter=MAX_ITERATIONS, trace=1)
+    return SklearnMaxentClassifier(training_instances)
 
 def predict_along_gold_path(classifier, sentence_tokens, gold_transitions):
     #Advance configurations with the gold transitions; record the classifier's prediction at every configuration.
@@ -253,6 +298,8 @@ def main():
         sys.exit("Usage: %s <train_data> <test_data> <test_labels> <train_seq> <pred_seq>"
                  % sys.argv[0])
     train_path, test_path, test_labels_path, train_seq_path, pred_seq_path = sys.argv[1:]
+    #Write our outputs in the same layout as the provided gold file
+    sequence_layout = detect_sequence_layout(test_labels_path)
 
     #Part 1: oracle
     train_sentences = read_conllu_sentences(train_path)
@@ -268,7 +315,7 @@ def main():
         #Part 2: features
         training_instances.extend(
             sentence_to_training_instances(sentence_tokens, gold_transitions))
-    write_transition_sequences(train_seq_path, train_transition_sequences)
+    write_transition_sequences(train_seq_path, train_transition_sequences, sequence_layout)
     print("Train sentences: %d (skipped %d), training instances: %d" % (
         len(train_transition_sequences), skipped_sentence_count, len(training_instances)),
         file=sys.stderr)
@@ -278,10 +325,7 @@ def main():
 
     #Part 3: test
     test_sentences = read_conllu_sentences(test_path)
-    gold_test_sequences = read_transition_sequences(test_labels_path)
-    if len(test_sentences) != len(gold_test_sequences):
-        sys.exit("Test sentence count (%d) != gold sequence count (%d)" % (
-            len(test_sentences), len(gold_test_sequences)))
+    gold_test_sequences = read_transition_sequences(test_labels_path, test_sentences)
 
     predicted_sequences = []
     flat_gold, flat_pred = [], []
@@ -290,7 +334,7 @@ def main():
         predicted_sequences.append(predicted)
         flat_gold.extend(gold_transitions)
         flat_pred.extend(predicted)
-    write_transition_sequences(pred_seq_path, predicted_sequences)
+    write_transition_sequences(pred_seq_path, predicted_sequences, sequence_layout)
 
     micro_f1 = f1_score(flat_gold, flat_pred, average="micro")
     macro_f1 = f1_score(flat_gold, flat_pred, average="macro")
