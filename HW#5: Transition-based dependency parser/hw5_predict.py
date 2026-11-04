@@ -9,6 +9,7 @@ Pipeline
             and report micro-F1 against es_test.seq.gold
 
 """
+import os
 import sys
 import random
 from collections import Counter, namedtuple
@@ -20,9 +21,9 @@ from sklearn.metrics import f1_score
 SHIFT= "SHIFT"
 LEFT_ARC= "LEFTARC"
 RIGHT_ARC= "RIGHTARC"
-#Separator between the operator and the dependency label, e.g. LEFTARC_nsubj.
-#CHANGE THIS BEFORE SUBMITTING!!!! (and parse_transition) if toy.seq uses a different convention.
-LABEL_SEPARATOR= "_"
+#Separator between the operator and the dependency label, e.g. LEFTARC_nsubj
+#CHECK THIS BEFORE SUBMITTING!!!! (and parse_transition) if toy.seq uses a different convention.
+LABEL_SEPARATOR= ", "
 
 ROOT_ID= 0
 ROOT_TOKEN_FIELDS= dict(form="ROOT", lemma="ROOT", upos="ROOT", feats="_")
@@ -31,9 +32,24 @@ MISSING= "NONE"
 MAX_ITERATIONS= 200 #optimizer iterations for logistic regression
 RANDOM_SEED= 571
 
+#Feature ablations: set HW5_ABLATE to a comma-separated list of group names to drop them,
+#e.g.  HW5_ABLATE=feats,lemmas ./hw5_predict.sh ... (if its not set then full feature template)
+ABLATION_GROUPS = {
+    "feats": lambda key: key.endswith(".feats"),
+    "lemmas": lambda key: key.endswith(".lemma"),
+    "forms": lambda key: key.endswith(".form") or key.startswith("s1.form"),
+    "pairs": lambda key: "+" in key,
+    "dep_labels": lambda key: "dep_rel" in key or key.endswith(".num_deps"),
+    "lookahead": lambda key: key.startswith(("s3.", "b2.", "b3.")),
+    "structure": lambda key: key in ("stack_depth", "buffer_empty", "s1_s2_distance"),
+}
+ABLATED_GROUPS = [g for g in os.environ.get("HW5_ABLATE", "").split(",") if g]
+for _group in ABLATED_GROUPS:
+    if _group not in ABLATION_GROUPS:
+        sys.exit("Unknown ablation group %r; choose from %s" % (_group, sorted(ABLATION_GROUPS)))
 Token = namedtuple("Token", "token_id form lemma upos feats head deprel")
 
-# CoNLL-U reading
+#CoNLL-U reading
 def read_conllu_sentences(path):
     #Return a list of sentences; each sentence is a list of Token (1-indexed ids).
     all_sentences= []
@@ -66,64 +82,54 @@ def read_conllu_sentences(path):
         all_sentences.append(current_tokens)
     return all_sentences
 
-# Transition sequence reading/writing (layout-agnostic)
-def detect_sequence_layout(path):
-    #'sentence_per_line', 'blank_line_between_sentences', or 'transition_per_line'.
-    with open(path, encoding="utf-8") as seq_file:
-        lines = seq_file.read().splitlines()
-    non_empty_lines = [line for line in lines if line.strip()]
-    if any(len(line.split()) > 1 for line in non_empty_lines):
-        return "sentence_per_line"
-    if len(non_empty_lines) < len(lines):
-        return "blank_line_between_sentences"
-    return "transition_per_line"
-
+#Transition sequence reading/writing
 def read_transition_sequences(path, sentences):
-    #Consume transitions for each sentence until its parse reaches the final state.
+    #One transition per line, e.g. 'SHIFT' or '(LEFTARC, nsubj)' and blank lines are ignored
+    #This method consumes transitions for each sentence until its parse reaches the final state
     with open(path, encoding="utf-8") as seq_file:
-        all_transitions = seq_file.read().split()
+        all_transitions = [line.strip() for line in seq_file if line.strip()]
     sequences = []
     position = 0
     for sentence_tokens in sentences:
         state = ParserState(sentence_tokens)
         sentence_transitions = []
         while not state.is_final():
-            transition = all_transitions[position]
+            operator, label = parse_transition(all_transitions[position])
             position += 1
-            sentence_transitions.append(transition)
-            state.apply(transition)
+            canonical_transition = make_transition(operator, label)
+            sentence_transitions.append(canonical_transition)
+            state.apply(canonical_transition)
         sequences.append(sentence_transitions)
     if position != len(all_transitions):
         print("WARNING: %d unused transitions in %s" % (
             len(all_transitions) - position, path), file=sys.stderr)
     return sequences
 
-def write_transition_sequences(path, sequences, layout):
+def write_transition_sequences(path, sequences):
+    #Same layout as toy.seq: one transition per line with blank line between sentences
     with open(path, "w", encoding="utf-8") as seq_file:
-        for transition_sequence in sequences:
-            if layout == "sentence_per_line":
-                seq_file.write(" ".join(transition_sequence) + "\n")
-            else:
-                for transition in transition_sequence:
-                    seq_file.write(transition + "\n")
-                if layout == "blank_line_between_sentences":
-                    seq_file.write("\n")
+        for sentence_index, transition_sequence in enumerate(sequences):
+            if sentence_index > 0:
+                seq_file.write("\n")
+            for transition in transition_sequence:
+                seq_file.write(transition + "\n")
 
 # Transition helpers
 def make_transition(operator, label=None):
+    #SHIFT -> 'SHIFT';  ('LEFTARC', 'det') -> '(LEFTARC, det)'  (matches es_test.seq.gold)
     if operator == SHIFT:
         return SHIFT
-    return operator + LABEL_SEPARATOR + label
+    return "(%s%s%s)" % (operator, LABEL_SEPARATOR, label)
 
 def parse_transition(transition):
-    #'LEFTARC_nsubj' -> ('LEFTARC', 'nsubj'); 'SHIFT' -> ('SHIFT', None).
+    #'(LEFTARC, nsubj)' or '(LEFTARC,nsubj)' -> ('LEFTARC', 'nsubj'); 'SHIFT' -> ('SHIFT', None)
+    transition = transition.strip()
     if transition == SHIFT:
         return SHIFT, None
-    for operator in (LEFT_ARC, RIGHT_ARC):
-        if transition.startswith(operator):
-            label = transition[len(operator):]
-            if label.startswith(LABEL_SEPARATOR):
-                label = label[len(LABEL_SEPARATOR):]
+    if transition.startswith("(") and transition.endswith(")"):
+        operator, _, label = transition[1:-1].partition(",")
+        operator, label = operator.strip(), label.strip()
+        if operator in (LEFT_ARC, RIGHT_ARC):
             return operator, label
     raise ValueError("Unknown transition: %r" % transition)
 
@@ -178,7 +184,7 @@ class ParserState:
         value = getattr(self.token_by_id[token_id], property_name)
         return value.lower() if property_name == "form" else value
 
-# Oracle (arc-standard, labeled)
+#Oracle (arc-standard, labeled)
 def generate_gold_transitions(sentence_tokens):
     #Run the training oracle; return the list of transitions, or None if the tree could not be derived (e.g. non-projective).
     gold_head = {t.token_id: t.head for t in sentence_tokens}
@@ -207,7 +213,7 @@ def generate_gold_transitions(sentence_tokens):
  
 # Feature extraction 
 def extract_features(state):
-    """Feature template (see README):
+    """Feature template:
       single positions: s1,s2,s3 {form,lemma,upos}; b1,b2,b3 {upos}; b1 {form,lemma}
       morphology: s1,s2,b1 feats (Spanish case/number/tense etc. in UD FEATS)
       pairs: s1.upos+s2.upos, s1.form+s2.form, s1.upos+b1.upos, s2.upos+s1.upos+b1.upos, s1.form+b1.upos
@@ -254,6 +260,9 @@ def extract_features(state):
         features["s1_s2_distance"] = str(distance) if distance < 4 else "4+"
     else:
         features["s1_s2_distance"] = MISSING
+    if ABLATED_GROUPS:
+        features = {key: value for key, value in features.items()
+                    if not any(ABLATION_GROUPS[group](key) for group in ABLATED_GROUPS)}
     return features
 
 def sentence_to_training_instances(sentence_tokens, gold_transitions):
@@ -265,7 +274,7 @@ def sentence_to_training_instances(sentence_tokens, gold_transitions):
         state.apply(transition)
     return instances
  
-# Train / test 
+#Train/test 
 class SklearnMaxentClassifier:
     #Multinomial logistic regression (= MaxEnt) with an NLTK-like classify().
     def __init__(self, training_instances):
@@ -298,9 +307,6 @@ def main():
         sys.exit("Usage: %s <train_data> <test_data> <test_labels> <train_seq> <pred_seq>"
                  % sys.argv[0])
     train_path, test_path, test_labels_path, train_seq_path, pred_seq_path = sys.argv[1:]
-    #Write our outputs in the same layout as the provided gold file
-    sequence_layout = detect_sequence_layout(test_labels_path)
-
     #Part 1: oracle
     train_sentences = read_conllu_sentences(train_path)
     train_transition_sequences = []
@@ -315,7 +321,7 @@ def main():
         #Part 2: features
         training_instances.extend(
             sentence_to_training_instances(sentence_tokens, gold_transitions))
-    write_transition_sequences(train_seq_path, train_transition_sequences, sequence_layout)
+    write_transition_sequences(train_seq_path, train_transition_sequences)
     print("Train sentences: %d (skipped %d), training instances: %d" % (
         len(train_transition_sequences), skipped_sentence_count, len(training_instances)),
         file=sys.stderr)
@@ -334,7 +340,7 @@ def main():
         predicted_sequences.append(predicted)
         flat_gold.extend(gold_transitions)
         flat_pred.extend(predicted)
-    write_transition_sequences(pred_seq_path, predicted_sequences, sequence_layout)
+    write_transition_sequences(pred_seq_path, predicted_sequences)
 
     micro_f1 = f1_score(flat_gold, flat_pred, average="micro")
     macro_f1 = f1_score(flat_gold, flat_pred, average="macro")
