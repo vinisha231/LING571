@@ -1,0 +1,96 @@
+% start S
+
+# ---------------------------------------------------------------
+# LING 571 HW6: rule-to-rule semantics, Neo-Davidsonian events
+# Lambda is "\", quantifiers are spelled "exists" / "all".
+# NPs are type-raised (\P.P(john), \P.exists x.(...)), so subjects and
+# objects share the same lexical entries.
+# NUM is a morphosyntactic feature used only for subject-verb agreement.
+# ---------------------------------------------------------------
+
+# ---- Sentences ----
+S[SEM=<?subj(?vp)>] -> NP[NUM=?n, SEM=?subj] VP[NUM=?n, SEM=?vp]
+S[SEM=<(?s1 & ?s2)>] -> S[SEM=?s1] And S[SEM=?s2]
+S[SEM=<(?s1 | ?s2)>] -> S[SEM=?s1] Or S[SEM=?s2]
+
+# ---- Verb phrases ----
+VP[NUM=?n, SEM=?v] -> IV[NUM=?n, SEM=?v]
+VP[NUM=?n, SEM=<?tv(?obj)>] -> TV[NUM=?n, SEM=?tv] NP[SEM=?obj]
+VP[NUM=?n, SEM=<\x.(?vp1(x) & ?vp2(x))>] -> VP[NUM=?n, SEM=?vp1] And VP[NUM=?n, SEM=?vp2]
+VP[NUM=?n, SEM=<\x.(?vp1(x) | ?vp2(x))>] -> VP[NUM=?n, SEM=?vp1] Or VP[NUM=?n, SEM=?vp2]
+
+# Negation with do-support: "does not eat", "do not eat".
+# The embedded VP may itself be a disjunction: "does not eat or drink"
+# is read as not(eat or drink).
+VP[NUM=?n, SEM=<\x.-?vp(x)>] -> Aux[NUM=?n] Neg VP[NUM=pl, SEM=?vp]
+
+# ---- Noun phrases ----
+NP[NUM=?n, SEM=<?det(?nom)>] -> Det[NUM=?n, SEM=?det] Nom[NUM=?n, SEM=?nom]
+NP[NUM=?n, SEM=?np] -> PropN[NUM=?n, SEM=?np]
+NP[NUM=sg, SEM=?np] -> QuantPro[SEM=?np]
+NP[NUM=sg, SEM=<\P.(?np1(P) | ?np2(P))>] -> NP[SEM=?np1] Or NP[SEM=?np2]
+NP[NUM=pl, SEM=<\P.(?np1(P) & ?np2(P))>] -> NP[SEM=?np1] And NP[SEM=?np2]
+
+# ---- Nominals (noun predicates, type <e,t>) ----
+Nom[NUM=?n, SEM=?noun] -> N[NUM=?n, SEM=?noun]
+Nom[NUM=?n, SEM=<\x.(?adj(x) & ?nom(x))>] -> Adj[SEM=?adj] Nom[NUM=?n, SEM=?nom]
+Nom[NUM=?n, SEM=<\x.(?nom1(x) | ?nom2(x))>] -> Nom[NUM=?n, SEM=?nom1] Or Nom[NUM=?n, SEM=?nom2]
+Nom[NUM=?n, SEM=<\x.(?nom1(x) & ?nom2(x))>] -> Nom[NUM=?n, SEM=?nom1] And Nom[NUM=?n, SEM=?nom2]
+
+# ---- Determiners ----
+Det[NUM=sg, SEM=<\Q P.exists x.(Q(x) & P(x))>] -> 'a' | 'an'
+Det[NUM=?n, SEM=<\Q P.exists x.(Q(x) & P(x))>] -> 'some'
+Det[NUM=sg, SEM=<\Q P.all x.(Q(x) -> P(x))>] -> 'every' | 'each'
+Det[NUM=pl, SEM=<\Q P.all x.(Q(x) -> P(x))>] -> 'all'
+Det[NUM=?n, SEM=<\Q P.-exists x.(Q(x) & P(x))>] -> 'no'
+
+# ---- Quantificational pronouns ----
+QuantPro[SEM=<\P.exists x.(person(x) & P(x))>] -> 'somebody' | 'someone'
+QuantPro[SEM=<\P.all x.(person(x) -> P(x))>] -> 'everybody' | 'everyone'
+QuantPro[SEM=<\P.-exists x.(person(x) & P(x))>] -> 'nobody'
+
+# ---- Proper names ----
+PropN[NUM=sg, SEM=<\P.P(john)>] -> 'John'
+PropN[NUM=sg, SEM=<\P.P(mary)>] -> 'Mary'
+PropN[NUM=sg, SEM=<\P.P(jack)>] -> 'Jack'
+
+# ---- Nouns ----
+N[NUM=sg, SEM=<\x.student(x)>] -> 'student'
+N[NUM=pl, SEM=<\x.student(x)>] -> 'students'
+N[NUM=sg, SEM=<\x.person(x)>] -> 'person'
+N[NUM=pl, SEM=<\x.person(x)>] -> 'people'
+N[NUM=sg, SEM=<\x.sandwich(x)>] -> 'sandwich'
+N[NUM=pl, SEM=<\x.sandwich(x)>] -> 'sandwiches'
+N[NUM=sg, SEM=<\x.bagel(x)>] -> 'bagel'
+N[NUM=pl, SEM=<\x.bagel(x)>] -> 'bagels'
+N[NUM=sg, SEM=<\x.soda(x)>] -> 'soda'
+N[NUM=pl, SEM=<\x.soda(x)>] -> 'sodas'
+N[NUM=sg, SEM=<\x.essay(x)>] -> 'essay'
+N[NUM=pl, SEM=<\x.essay(x)>] -> 'essays'
+
+# ---- Adjectives ----
+Adj[SEM=<\x.hungry(x)>] -> 'hungry'
+Adj[SEM=<\x.tall(x)>] -> 'tall'
+
+# ---- Function words ----
+And -> 'and'
+Or -> 'or'
+Neg -> 'not'
+Aux[NUM=sg] -> 'does'
+Aux[NUM=pl] -> 'do'
+
+# ---- Intransitive verbs: \x.exists e.(pred(e) & role(e,x)) ----
+IV[NUM=sg, SEM=<\x.exists e.(eating(e) & eater(e,x))>] -> 'eats'
+IV[NUM=pl, SEM=<\x.exists e.(eating(e) & eater(e,x))>] -> 'eat'
+IV[NUM=sg, SEM=<\x.exists e.(drinking(e) & drinker(e,x))>] -> 'drinks'
+IV[NUM=pl, SEM=<\x.exists e.(drinking(e) & drinker(e,x))>] -> 'drink'
+IV[NUM=sg, SEM=<\x.exists e.(writing(e) & writer(e,x))>] -> 'writes'
+IV[NUM=pl, SEM=<\x.exists e.(writing(e) & writer(e,x))>] -> 'write'
+
+# ---- Transitive verbs: \X y.X(\x.exists e.(pred(e) & role1(e,y) & role2(e,x))) ----
+TV[NUM=sg, SEM=<\X y.X(\x.exists e.(eating(e) & eater(e,y) & eaten(e,x)))>] -> 'eats'
+TV[NUM=pl, SEM=<\X y.X(\x.exists e.(eating(e) & eater(e,y) & eaten(e,x)))>] -> 'eat'
+TV[NUM=sg, SEM=<\X y.X(\x.exists e.(drinking(e) & drinker(e,y) & drunk(e,x)))>] -> 'drinks'
+TV[NUM=pl, SEM=<\X y.X(\x.exists e.(drinking(e) & drinker(e,y) & drunk(e,x)))>] -> 'drink'
+TV[NUM=sg, SEM=<\X y.X(\x.exists e.(writing(e) & writer(e,y) & written(e,x)))>] -> 'writes'
+TV[NUM=pl, SEM=<\X y.X(\x.exists e.(writing(e) & writer(e,y) & written(e,x)))>] -> 'write'
